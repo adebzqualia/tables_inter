@@ -5,13 +5,15 @@ from openpyxl.utils import get_column_letter
 from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
+from .aggregator import build_sum_formula
 from .config import AppConfig, SheetConfig
-from .models import ExtractionRecord, GroupTotal, ValidationIssue
+from .models import ExtractionRecord, ValidationIssue
 
 _HEADER_FONT = Font(bold=True)
 _TITLE_FONT = Font(bold=True, size=12)
 _TOTAL_FONT = Font(bold=True)
 _THIN_TOP_BORDER = Border(top=Side(style="thin"))
+_HYPERLINK_FONT = Font(underline="single")
 
 
 def _prepare_generated_sheet(
@@ -39,32 +41,21 @@ def _prepare_generated_sheet(
 
 def _record_lookup(
     records: list[ExtractionRecord],
-) -> dict[tuple[str, str, str, str], ExtractionRecord]:
-    """Index extraction records for output writing.
+) -> dict[tuple[str, int, str, str], ExtractionRecord]:
+    """Index extraction records using KPI configuration position.
 
     :param records: Extraction records.
-    :return: Lookup keyed by source, KPI, country, and period.
+    :return: Lookup keyed by source, KPI index, country, and period.
+    :raises ValueError: If a logical observation occurs more than once.
     """
 
-    return {
-        (record.source, record.kpi, record.country, record.period): record
-        for record in records
-    }
-
-
-def _total_lookup(
-    totals: list[GroupTotal],
-) -> dict[tuple[str, str, str, str], GroupTotal]:
-    """Index group totals for output writing.
-
-    :param totals: Group totals.
-    :return: Lookup keyed by source, KPI, group, and period.
-    """
-
-    return {
-        (total.source, total.kpi, total.group, total.period): total
-        for total in totals
-    }
+    lookup: dict[tuple[str, int, str, str], ExtractionRecord] = {}
+    for record in records:
+        key = (record.source, record.kpi_index, record.country, record.period)
+        if key in lookup:
+            raise ValueError(f"Duplicate extraction record detected: {key}")
+        lookup[key] = record
+    return lookup
 
 
 def _style_header_row(ws: Worksheet, row: int, last_column: int) -> None:
@@ -81,37 +72,74 @@ def _style_header_row(ws: Worksheet, row: int, last_column: int) -> None:
         cell.alignment = Alignment(horizontal="center")
 
 
+def _quote_sheet_name(name: str) -> str:
+    """Quote an Excel worksheet name for formulas and internal links.
+
+    :param name: Worksheet name.
+    :return: Safely quoted worksheet name.
+    """
+
+    return "'" + name.replace("'", "''") + "'"
+
+
+def _source_formula(sheet_name: str, coordinate: str) -> str:
+    """Build a guarded Excel formula linking to a source cell.
+
+    A plain direct reference displays an empty Excel source cell as zero. The
+    guard preserves genuine blanks and source errors as blank intermediary cells,
+    while a real numeric zero remains zero. Non-numeric source text remains
+    visible and is ignored by Excel ``SUM`` formulas.
+
+    :param sheet_name: Physical source worksheet name.
+    :param coordinate: Source cell coordinate.
+    :return: Excel formula.
+    """
+
+    reference = f"{_quote_sheet_name(sheet_name)}!{coordinate}"
+    return f'=IFERROR(IF({reference}="","",{reference}),"")'
+
+
+def _source_hyperlink(sheet_name: str, coordinate: str) -> str:
+    """Build an internal hyperlink to a source cell.
+
+    :param sheet_name: Physical source worksheet name.
+    :param coordinate: Source cell coordinate.
+    :return: Internal Excel hyperlink target.
+    """
+
+    return f"#{_quote_sheet_name(sheet_name)}!{coordinate}"
+
+
 def _write_source_sheet(
     ws: Worksheet,
     source_name: str,
     sheet: SheetConfig,
     config: AppConfig,
     records: list[ExtractionRecord],
-    totals: list[GroupTotal],
 ) -> None:
-    """Write all additive KPI tables for one logical source sheet.
+    """Write all additive KPI tables using native Excel formulas.
+
+    Country cells reference the resolved source cells. Country-group totals are
+    native Excel ``SUM`` formulas over the intermediary country rows.
 
     :param ws: Generated intermediary worksheet.
     :param source_name: Logical source-sheet name.
     :param sheet: Source-sheet configuration.
     :param config: Complete application configuration.
     :param records: Extraction records.
-    :param totals: Configured group totals.
     """
 
     record_by_key = _record_lookup(records)
-    total_by_key = _total_lookup(totals)
     sum_kpis = [
-        kpi
-        for kpi in config.kpis_by_source[source_name]
-        if kpi.aggregation == "sum"
+        kpi for kpi in config.kpis_by_source[source_name] if kpi.aggregation == "sum"
     ]
 
     last_column = 1 + len(sheet.periods)
     row = 1
 
     for kpi in sum_kpis:
-        title_cell = ws.cell(row=row, column=1, value=kpi.name)
+        title = kpi.display_name(config.workbook.kpi_title_separator)
+        title_cell = ws.cell(row=row, column=1, value=title)
         title_cell.font = _TITLE_FONT
         if last_column > 1:
             ws.merge_cells(
@@ -128,15 +156,31 @@ def _write_source_sheet(
         _style_header_row(ws, header_row, last_column)
 
         data_row = header_row + 1
+        row_by_country: dict[str, int] = {}
+
         for country in config.countries.countries:
+            row_by_country[country] = data_row
             ws.cell(row=data_row, column=1, value=country)
+
             for offset, period in enumerate(sheet.periods, start=2):
-                record = record_by_key[(source_name, kpi.name, country, period)]
-                ws.cell(row=data_row, column=offset, value=record.value)
+                record = record_by_key[(source_name, kpi.index, country, period)]
+                cell = ws.cell(row=data_row, column=offset)
+
+                if record.coordinate is not None:
+                    cell.value = _source_formula(record.source_sheet, record.coordinate)
+                    if config.workbook.add_source_hyperlinks:
+                        cell.hyperlink = _source_hyperlink(
+                            record.source_sheet,
+                            record.coordinate,
+                        )
+                        cell.font = _HYPERLINK_FONT
+                else:
+                    cell.value = None
+
             data_row += 1
 
         total_row = data_row + 1
-        for group_name in config.countries.groups:
+        for group_name, members in config.countries.groups.items():
             label_cell = ws.cell(
                 row=total_row,
                 column=1,
@@ -145,23 +189,20 @@ def _write_source_sheet(
             label_cell.font = _TOTAL_FONT
             label_cell.border = _THIN_TOP_BORDER
 
-            for offset, period in enumerate(sheet.periods, start=2):
-                total = total_by_key[(source_name, kpi.name, group_name, period)]
-                cell = ws.cell(row=total_row, column=offset, value=total.value)
+            for offset, _period in enumerate(sheet.periods, start=2):
+                cell = ws.cell(row=total_row, column=offset)
+                cell.value = build_sum_formula(offset, row_by_country, members)
                 cell.font = _TOTAL_FONT
                 cell.border = _THIN_TOP_BORDER
+
             total_row += 1
 
         row = total_row + config.workbook.table_spacing_rows
 
-    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["A"].width = 32
     for column in range(2, last_column + 1):
         period = sheet.periods[column - 2]
-        ws.column_dimensions[get_column_letter(column)].width = max(
-            12,
-            len(period) + 2,
-        )
-
+        ws.column_dimensions[get_column_letter(column)].width = max(12, len(period) + 2)
 
 
 def _write_validation_sheet(
@@ -200,10 +241,10 @@ def _write_validation_sheet(
     widths = {
         "A": 16,
         "B": 28,
-        "C": 55,
+        "C": 65,
         "D": 16,
-        "E": 32,
-        "F": 90,
+        "E": 36,
+        "F": 100,
     }
     for column, width in widths.items():
         ws.column_dimensions[column].width = width
@@ -216,18 +257,16 @@ def write_generated_sheets(
     wb: Workbook,
     config: AppConfig,
     records: list[ExtractionRecord],
-    totals: list[GroupTotal],
     issues: list[ValidationIssue],
 ) -> None:
-    """Add intermediary and validation sheets to the existing workbook.
+    """Add formula-linked intermediary and validation sheets to the workbook.
 
     Existing source worksheets are not recreated or rewritten. Only configured
     generated sheets are created/replaced.
 
     :param wb: Formula-preserving workbook to modify and save.
     :param config: Complete application configuration.
-    :param records: Extraction records.
-    :param totals: Configured group totals.
+    :param records: Extraction records containing resolved source coordinates.
     :param issues: Validation issues.
     """
 
@@ -250,7 +289,6 @@ def write_generated_sheets(
             sheet=sheet,
             config=config,
             records=records,
-            totals=totals,
         )
 
     validation_ws = _prepare_generated_sheet(
@@ -259,3 +297,9 @@ def write_generated_sheets(
         replace_existing=replace_existing,
     )
     _write_validation_sheet(validation_ws, issues)
+
+    calculation = getattr(wb, "calculation", None)
+    if calculation is not None:
+        calculation.calcMode = "auto"
+        calculation.fullCalcOnLoad = True
+        calculation.forceFullCalc = True

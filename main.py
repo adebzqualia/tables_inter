@@ -4,7 +4,6 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from pops.aggregator import compute_group_totals
 from pops.config import load_app_config
 from pops.extractor import extract_workbook
 from pops.models import ValidationIssue
@@ -15,9 +14,6 @@ CONFIG_DIR = Path(__file__).resolve().parent / "config"
 
 def _configuration_warnings(config) -> list[ValidationIssue]:
     """Create non-fatal diagnostics for incomplete optional business groups.
-
-    Empty groups are allowed because TOP8/TOP9 membership is a business rule
-    that must not be invented by the program.
 
     :param config: Complete application configuration.
     :return: Configuration warnings suitable for the validation sheet.
@@ -32,7 +28,7 @@ def _configuration_warnings(config) -> list[ValidationIssue]:
             issue="EMPTY_COUNTRY_GROUP",
             details=(
                 f"Country group {group_name!r} has no members. "
-                "Its generated totals will remain blank until configured."
+                "Its generated TOTAL row will remain blank until configured."
             ),
         )
         for group_name, members in config.countries.groups.items()
@@ -41,7 +37,7 @@ def _configuration_warnings(config) -> list[ValidationIssue]:
 
 
 def main() -> None:
-    """Generate intermediary KPI tables in a copy of Consolidated POPS.
+    """Generate formula-linked intermediary KPI tables in a workbook copy.
 
     :raises FileNotFoundError: If the configured input workbook does not exist.
     """
@@ -75,13 +71,11 @@ def main() -> None:
         config=config,
     )
     issues = _configuration_warnings(config) + issues
-    totals = compute_group_totals(records, config)
 
     write_generated_sheets(
         wb=formulas_wb,
         config=config,
         records=records,
-        totals=totals,
         issues=issues,
     )
     formulas_wb.save(output_path)
@@ -103,6 +97,8 @@ def main() -> None:
 
     print(f"Created: {output_path}")
     print(f"Validation issues: {len(issues)}")
+    print("Intermediary country values: Excel links to resolved source cells")
+    print("Country-group totals: native Excel SUM formulas")
     print(f"Configured ratio KPIs skipped: {ratio_count}")
     print(f"Explicitly skipped KPIs: {skip_count}")
 

@@ -3,6 +3,13 @@ validation_sheet: INTER_VALIDATION
 replace_existing_generated_sheets: true
 table_spacing_rows: 3
 
+# Intermediary country cells contain formulas linking to their detected source
+# cells. If true, the same cells are also clickable links to the source location.
+add_source_hyperlinks: true
+
+# Optional type/subtype values are display-only and appear before the KPI name.
+kpi_title_separator: " | "
+
 sources:
   ID Card:
     enabled: true

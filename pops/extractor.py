@@ -44,12 +44,12 @@ class ResolvedLabels:
     """Resolved KPI and period labels for one worksheet.
 
     :param periods: Period label to resolved cell, or ``None``.
-    :param kpis: KPI label to resolved cell, or ``None``.
+    :param kpis: KPI configuration index to resolved cell, or ``None``.
     :param issues: Matching diagnostics.
     """
 
     periods: dict[str, CellRef | None]
-    kpis: dict[str, CellRef | None]
+    kpis: dict[int, CellRef | None]
     issues: tuple[ValidationIssue, ...]
 
 
@@ -91,6 +91,7 @@ def build_label_index(
             normalized = normalize_label(raw_value)
             if not normalized:
                 continue
+
             index[normalized].append(
                 CellRef(
                     row=formula_cell.row,
@@ -100,24 +101,10 @@ def build_label_index(
                 )
             )
 
+    for refs in index.values():
+        refs.sort(key=lambda ref: (ref.row, ref.column))
+
     return dict(index)
-
-
-def _candidate_map(
-    labels: Iterable[str],
-    label_index: dict[str, list[CellRef]],
-) -> dict[str, list[CellRef]]:
-    """Return exact normalized candidates for configured labels.
-
-    :param labels: Configured labels.
-    :param label_index: Worksheet label index.
-    :return: Candidate coordinates by original configured label.
-    """
-
-    return {
-        label: list(label_index.get(normalize_label(label), []))
-        for label in labels
-    }
 
 
 def _support_by_row(candidates: dict[str, list[CellRef]]) -> Counter[int]:
@@ -131,20 +118,6 @@ def _support_by_row(candidates: dict[str, list[CellRef]]) -> Counter[int]:
     for refs in candidates.values():
         for row in {ref.row for ref in refs}:
             support[row] += 1
-    return support
-
-
-def _support_by_column(candidates: dict[str, list[CellRef]]) -> Counter[int]:
-    """Count how many distinct configured labels occur in each column.
-
-    :param candidates: Candidate coordinates keyed by label.
-    :return: Column support counts.
-    """
-
-    support: Counter[int] = Counter()
-    for refs in candidates.values():
-        for column in {ref.column for ref in refs}:
-            support[column] += 1
     return support
 
 
@@ -162,29 +135,34 @@ def _resolve_periods(
     country: str,
     sheet_name: str,
     periods: tuple[str, ...],
-    candidates: dict[str, list[CellRef]],
-    kpi_candidates: dict[str, list[CellRef]],
+    label_index: dict[str, list[CellRef]],
+    kpis: tuple[KPIConfig, ...],
 ) -> tuple[dict[str, CellRef | None], list[ValidationIssue]]:
-    """Resolve configured period labels without arbitrary first-match logic.
-
-    Duplicate candidates are first constrained to cells above the apparent KPI
-    body, then by the row containing the most distinct configured periods. A
-    remaining tie is reported as ambiguous.
+    """Resolve configured period labels using exact normalized matching.
 
     :param country: Country/entity name.
     :param sheet_name: Physical worksheet name.
     :param periods: Ordered configured periods.
-    :param candidates: Period candidates.
-    :param kpi_candidates: KPI candidates used for table context.
+    :param label_index: One-pass worksheet label index.
+    :param kpis: Configured KPIs, used only to infer table-body context.
     :return: Resolved period cells and diagnostics.
     """
 
-    issues: list[ValidationIssue] = []
-    resolved: dict[str, CellRef | None] = {}
+    candidates = {
+        period: list(label_index.get(normalize_label(period), []))
+        for period in periods
+    }
     row_support = _support_by_row(candidates)
 
-    all_kpi_rows = [ref.row for refs in kpi_candidates.values() for ref in refs]
+    all_kpi_rows = [
+        ref.row
+        for kpi in kpis
+        for ref in label_index.get(normalize_label(kpi.name), [])
+    ]
     body_top = min(all_kpi_rows) if all_kpi_rows else None
+
+    resolved: dict[str, CellRef | None] = {}
+    issues: list[ValidationIssue] = []
 
     for period in periods:
         refs = candidates[period]
@@ -212,16 +190,11 @@ def _resolve_periods(
             if above_body:
                 contextual = above_body
 
-        chosen: CellRef | None = None
-        if len(contextual) == 1:
-            chosen = contextual[0]
-        else:
-            max_support = max(row_support[ref.row] for ref in contextual)
-            strongest = [
-                ref for ref in contextual if row_support[ref.row] == max_support
-            ]
-            if max_support > 1 and len(strongest) == 1:
-                chosen = strongest[0]
+        max_support = max(row_support[ref.row] for ref in contextual)
+        strongest = [
+            ref for ref in contextual if row_support[ref.row] == max_support
+        ]
+        chosen = strongest[0] if len(strongest) == 1 and max_support > 1 else None
 
         if chosen is None:
             resolved[period] = None
@@ -235,22 +208,21 @@ def _resolve_periods(
                     details=f"Ambiguous exact matches at: {_coordinates(refs)}",
                 )
             )
-            continue
-
-        resolved[period] = chosen
-        issues.append(
-            ValidationIssue(
-                country=country,
-                source_sheet=sheet_name,
-                kpi=None,
-                period=period,
-                issue="DUPLICATE_PERIOD_RESOLVED",
-                details=(
-                    f"Exact matches at: {_coordinates(refs)}. "
-                    f"Resolved by table context to {chosen.coordinate}."
-                ),
+        else:
+            resolved[period] = chosen
+            issues.append(
+                ValidationIssue(
+                    country=country,
+                    source_sheet=sheet_name,
+                    kpi=None,
+                    period=period,
+                    issue="DUPLICATE_PERIOD_RESOLVED",
+                    details=(
+                        f"Exact matches at: {_coordinates(refs)}. "
+                        f"Resolved by header-row context to {chosen.coordinate}."
+                    ),
+                )
             )
-        )
 
     return resolved, issues
 
@@ -259,53 +231,41 @@ def _resolve_kpis(
     country: str,
     sheet_name: str,
     kpis: tuple[KPIConfig, ...],
-    candidates: dict[str, list[CellRef]],
+    label_index: dict[str, list[CellRef]],
     resolved_periods: dict[str, CellRef | None],
-) -> tuple[dict[str, CellRef | None], list[ValidationIssue]]:
-    """Resolve configured KPI labels without substring or fuzzy matching.
+    title_separator: str,
+) -> tuple[dict[int, CellRef | None], list[ValidationIssue]]:
+    """Resolve KPI occurrences positionally in worksheet order.
 
-    Duplicate candidates are constrained below the resolved period headers and
-    to the left of the resolved data columns where possible. Remaining ties use
-    KPI-column support; unresolved ties are reported.
+    Same-name KPI definitions are grouped by normalized name. If the source
+    worksheet contains the same number of contextual matches, they are assigned
+    in configuration order to top-to-bottom worksheet occurrences. A count
+    mismatch leaves the whole same-name group unresolved to avoid positional
+    shifting after a missing/extra occurrence.
 
     :param country: Country/entity name.
     :param sheet_name: Physical worksheet name.
-    :param kpis: Configured KPIs.
-    :param candidates: KPI candidates.
-    :param resolved_periods: Previously resolved period cells.
+    :param kpis: Ordered configured KPI occurrences.
+    :param label_index: One-pass worksheet label index.
+    :param resolved_periods: Resolved period headers for table context.
+    :param title_separator: Separator used in display labels.
     :return: Resolved KPI cells and diagnostics.
     """
-
-    issues: list[ValidationIssue] = []
-    resolved: dict[str, CellRef | None] = {}
-    column_support = _support_by_column(candidates)
 
     period_refs = [ref for ref in resolved_periods.values() if ref is not None]
     header_bottom = max((ref.row for ref in period_refs), default=None)
     leftmost_period_column = min((ref.column for ref in period_refs), default=None)
 
+    grouped: dict[str, list[KPIConfig]] = defaultdict(list)
     for kpi in kpis:
-        refs = candidates[kpi.name]
-        if not refs:
-            resolved[kpi.name] = None
-            issues.append(
-                ValidationIssue(
-                    country=country,
-                    source_sheet=sheet_name,
-                    kpi=kpi.name,
-                    period=None,
-                    issue="KPI_NOT_FOUND",
-                    details="Configured KPI label was not found.",
-                )
-            )
-            continue
+        grouped[normalize_label(kpi.name)].append(kpi)
 
-        if len(refs) == 1:
-            resolved[kpi.name] = refs[0]
-            continue
+    resolved: dict[int, CellRef | None] = {kpi.index: None for kpi in kpis}
+    issues: list[ValidationIssue] = []
 
-        contextual = refs
-        constrained = [
+    for normalized_name, configured in grouped.items():
+        refs = list(label_index.get(normalized_name, []))
+        contextual = [
             ref
             for ref in refs
             if (header_bottom is None or ref.row > header_bottom)
@@ -314,50 +274,51 @@ def _resolve_kpis(
                 or ref.column < leftmost_period_column
             )
         ]
-        if constrained:
-            contextual = constrained
+        if contextual:
+            refs = contextual
+        refs.sort(key=lambda ref: (ref.row, ref.column))
 
-        chosen: CellRef | None = None
-        if len(contextual) == 1:
-            chosen = contextual[0]
-        else:
-            max_support = max(column_support[ref.column] for ref in contextual)
-            strongest = [
-                ref
-                for ref in contextual
-                if column_support[ref.column] == max_support
-            ]
-            if max_support > 1 and len(strongest) == 1:
-                chosen = strongest[0]
+        expected = len(configured)
+        found = len(refs)
+        representative = configured[0]
 
-        if chosen is None:
-            resolved[kpi.name] = None
+        if found == 0:
+            for kpi in configured:
+                issues.append(
+                    ValidationIssue(
+                        country=country,
+                        source_sheet=sheet_name,
+                        kpi=kpi.display_name(title_separator),
+                        period=None,
+                        issue="KPI_NOT_FOUND",
+                        details="Configured KPI label was not found.",
+                    )
+                )
+            continue
+
+        if found != expected:
+            display_names = "; ".join(
+                kpi.display_name(title_separator) for kpi in configured
+            )
             issues.append(
                 ValidationIssue(
                     country=country,
                     source_sheet=sheet_name,
-                    kpi=kpi.name,
+                    kpi=representative.name,
                     period=None,
-                    issue="DUPLICATE_KPI_MATCH",
-                    details=f"Ambiguous exact matches at: {_coordinates(refs)}",
+                    issue="KPI_OCCURRENCE_COUNT_MISMATCH",
+                    details=(
+                        f"Expected {expected} occurrence(s) of {representative.name!r} "
+                        f"from configuration, found {found} at: {_coordinates(refs)}. "
+                        f"Configured occurrences: {display_names}. No positional "
+                        "assignment was made for this name."
+                    ),
                 )
             )
             continue
 
-        resolved[kpi.name] = chosen
-        issues.append(
-            ValidationIssue(
-                country=country,
-                source_sheet=sheet_name,
-                kpi=kpi.name,
-                period=None,
-                issue="DUPLICATE_KPI_RESOLVED",
-                details=(
-                    f"Exact matches at: {_coordinates(refs)}. "
-                    f"Resolved by table context to {chosen.coordinate}."
-                ),
-            )
-        )
+        for kpi, ref in zip(configured, refs):
+            resolved[kpi.index] = ref
 
     return resolved, issues
 
@@ -368,37 +329,37 @@ def resolve_labels(
     sheet: SheetConfig,
     kpis: tuple[KPIConfig, ...],
     label_index: dict[str, list[CellRef]],
+    title_separator: str,
 ) -> ResolvedLabels:
-    """Resolve all configured periods and KPIs for one worksheet.
+    """Resolve all configured periods and KPI occurrences for one worksheet.
 
     :param country: Country/entity name.
     :param sheet_name: Physical worksheet name.
     :param sheet: Source-sheet configuration.
     :param kpis: KPI configuration for the source.
     :param label_index: One-pass worksheet label index.
+    :param title_separator: Separator used in KPI display labels.
     :return: Resolved labels and diagnostics.
     """
 
-    period_candidates = _candidate_map(sheet.periods, label_index)
-    kpi_candidates = _candidate_map((kpi.name for kpi in kpis), label_index)
-
-    resolved_periods, period_issues = _resolve_periods(
+    periods, period_issues = _resolve_periods(
         country=country,
         sheet_name=sheet_name,
         periods=sheet.periods,
-        candidates=period_candidates,
-        kpi_candidates=kpi_candidates,
+        label_index=label_index,
+        kpis=kpis,
     )
     resolved_kpis, kpi_issues = _resolve_kpis(
         country=country,
         sheet_name=sheet_name,
         kpis=kpis,
-        candidates=kpi_candidates,
-        resolved_periods=resolved_periods,
+        label_index=label_index,
+        resolved_periods=periods,
+        title_separator=title_separator,
     )
 
     return ResolvedLabels(
-        periods=resolved_periods,
+        periods=periods,
         kpis=resolved_kpis,
         issues=tuple(period_issues + kpi_issues),
     )
@@ -439,24 +400,24 @@ def _is_excel_error(cell: Cell | MergedCell, value: object) -> bool:
 def _extract_numeric_value(
     country: str,
     sheet_name: str,
-    kpi: str,
+    kpi_display: str,
     period: str,
     row: int,
     column: int,
     values_ws: Worksheet,
     formulas_ws: Worksheet,
 ) -> tuple[int | float | None, str, ValidationIssue | None]:
-    """Extract and validate one additive KPI value.
+    """Inspect one additive KPI value while retaining its source coordinate.
 
     :param country: Country/entity name.
     :param sheet_name: Physical worksheet name.
-    :param kpi: KPI label.
+    :param kpi_display: KPI display label.
     :param period: Period label.
     :param row: Resolved KPI row.
     :param column: Resolved period column.
     :param values_ws: Worksheet containing cached formula results.
     :param formulas_ws: Formula-preserving worksheet.
-    :return: Numeric value, source coordinate, and optional diagnostic.
+    :return: Numeric cached value, source coordinate, and optional diagnostic.
     """
 
     formula_cell = _merged_anchor(formulas_ws, row, column)
@@ -470,7 +431,7 @@ def _extract_numeric_value(
         return None, coordinate, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
-            kpi=kpi,
+            kpi=kpi_display,
             period=period,
             issue="EXCEL_ERROR_VALUE",
             details=f"Excel error at {coordinate}: {raw_value!r}",
@@ -480,12 +441,13 @@ def _extract_numeric_value(
         return None, coordinate, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
-            kpi=kpi,
+            kpi=kpi_display,
             period=period,
             issue="FORMULA_WITHOUT_CACHED_VALUE",
             details=(
                 f"Formula at {coordinate} has no cached calculated value. "
-                "Open/recalculate/save the workbook in Excel before rerunning."
+                "The generated intermediary formula will still link to it, but "
+                "the input workbook should be recalculated/saved in Excel."
             ),
         )
 
@@ -493,19 +455,17 @@ def _extract_numeric_value(
         return None, coordinate, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
-            kpi=kpi,
+            kpi=kpi_display,
             period=period,
             issue="BLANK_VALUE",
             details=f"Resolved source cell {coordinate} is blank.",
         )
 
-    if isinstance(raw_value, bool) or not isinstance(
-        raw_value, (int, float, Decimal)
-    ):
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float, Decimal)):
         return None, coordinate, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
-            kpi=kpi,
+            kpi=kpi_display,
             period=period,
             issue="NON_NUMERIC_VALUE",
             details=f"Expected a numeric value at {coordinate}, found {raw_value!r}.",
@@ -513,22 +473,25 @@ def _extract_numeric_value(
 
     if isinstance(raw_value, Decimal):
         raw_value = float(raw_value)
-
     return raw_value, coordinate, None
 
 
 def _empty_records_for_sheet(
     country: str,
+    sheet_name: str,
     source: str,
     periods: tuple[str, ...],
     kpis: tuple[KPIConfig, ...],
+    title_separator: str,
 ) -> list[ExtractionRecord]:
-    """Create missing records for all additive KPI intersections.
+    """Create unresolved records for all additive KPI intersections.
 
     :param country: Country/entity name.
+    :param sheet_name: Expected physical worksheet name.
     :param source: Logical source-sheet name.
     :param periods: Configured periods.
     :param kpis: Configured KPIs.
+    :param title_separator: Separator used in display labels.
     :return: Missing extraction records for ``sum`` KPIs.
     """
 
@@ -536,7 +499,10 @@ def _empty_records_for_sheet(
         ExtractionRecord(
             country=country,
             source=source,
+            source_sheet=sheet_name,
+            kpi_index=kpi.index,
             kpi=kpi.name,
+            kpi_display=kpi.display_name(title_separator),
             period=period,
             value=None,
             coordinate=None,
@@ -554,9 +520,9 @@ def extract_workbook(
 ) -> tuple[list[ExtractionRecord], list[ValidationIssue]]:
     """Extract all enabled source sheets from the consolidated workbook.
 
-    Each relevant worksheet is scanned once. Only additive KPIs produce value
-    records; configured ratio/skip KPIs are recognized but deliberately not
-    aggregated in this version.
+    Relevant worksheets are scanned once. Repeated KPI names are mapped by
+    configuration order to worksheet order. Only additive KPIs produce output
+    records; ratio/skip KPIs are resolved but deliberately not aggregated yet.
 
     :param values_wb: Workbook loaded with ``data_only=True``.
     :param formulas_wb: Workbook loaded with ``data_only=False``.
@@ -566,6 +532,7 @@ def extract_workbook(
 
     records: list[ExtractionRecord] = []
     issues: list[ValidationIssue] = []
+    separator = config.workbook.kpi_title_separator
 
     for source_name, sheet in config.workbook.sources.items():
         if not sheet.enabled:
@@ -595,9 +562,11 @@ def extract_workbook(
                 records.extend(
                     _empty_records_for_sheet(
                         country=country,
+                        sheet_name=sheet_name,
                         source=source_name,
                         periods=sheet.periods,
                         kpis=kpis,
+                        title_separator=separator,
                     )
                 )
                 continue
@@ -611,20 +580,25 @@ def extract_workbook(
                 sheet=sheet,
                 kpis=kpis,
                 label_index=label_index,
+                title_separator=separator,
             )
             issues.extend(resolved.issues)
 
             for kpi in sum_kpis:
-                kpi_ref = resolved.kpis[kpi.name]
+                kpi_ref = resolved.kpis[kpi.index]
+                kpi_display = kpi.display_name(separator)
+
                 for period in sheet.periods:
                     period_ref = resolved.periods[period]
-
                     if kpi_ref is None or period_ref is None:
                         records.append(
                             ExtractionRecord(
                                 country=country,
                                 source=source_name,
+                                source_sheet=sheet_name,
+                                kpi_index=kpi.index,
                                 kpi=kpi.name,
+                                kpi_display=kpi_display,
                                 period=period,
                                 value=None,
                                 coordinate=None,
@@ -635,7 +609,7 @@ def extract_workbook(
                     value, coordinate, issue = _extract_numeric_value(
                         country=country,
                         sheet_name=sheet_name,
-                        kpi=kpi.name,
+                        kpi_display=kpi_display,
                         period=period,
                         row=kpi_ref.row,
                         column=period_ref.column,
@@ -646,7 +620,10 @@ def extract_workbook(
                         ExtractionRecord(
                             country=country,
                             source=source_name,
+                            source_sheet=sheet_name,
+                            kpi_index=kpi.index,
                             kpi=kpi.name,
+                            kpi_display=kpi_display,
                             period=period,
                             value=value,
                             coordinate=coordinate,

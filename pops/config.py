@@ -61,6 +61,8 @@ class WorkbookConfig:
     :param validation_sheet: Generated validation sheet name.
     :param replace_existing_generated_sheets: Whether generated sheets may be recreated.
     :param table_spacing_rows: Empty rows between intermediary KPI tables.
+    :param add_source_hyperlinks: Whether intermediary cells link to their source cell.
+    :param kpi_title_separator: Separator used between type/subtype/name in titles.
     :param sources: Ordered logical source-sheet definitions.
     """
 
@@ -68,21 +70,43 @@ class WorkbookConfig:
     validation_sheet: str
     replace_existing_generated_sheets: bool
     table_spacing_rows: int
+    add_source_hyperlinks: bool
+    kpi_title_separator: str
     sources: dict[str, SheetConfig]
 
 
 @dataclass(frozen=True)
 class KPIConfig:
-    """Configuration for one KPI.
+    """Configuration for one KPI occurrence.
 
+    Duplicate ``name`` values are intentionally allowed. They are matched to
+    worksheet occurrences in top-to-bottom order using configuration order.
+    ``type`` and ``subtype`` are display metadata only and never affect matching.
+
+    :param index: Zero-based position in the source KPI configuration.
     :param name: KPI label to match in Excel.
     :param aggregation: Aggregation method such as ``sum`` or ``ratio``.
+    :param type: Optional display-only KPI type/context.
+    :param subtype: Optional display-only KPI subtype/context.
     :param note: Optional business note.
     """
 
+    index: int
     name: str
     aggregation: str
+    type: str | None = None
+    subtype: str | None = None
     note: str | None = None
+
+    def display_name(self, separator: str = " | ") -> str:
+        """Build the intermediary title for this KPI.
+
+        :param separator: Text separating optional metadata and KPI name.
+        :return: Display label.
+        """
+
+        parts = [part for part in (self.type, self.subtype, self.name) if part]
+        return separator.join(parts)
 
 
 @dataclass(frozen=True)
@@ -175,6 +199,9 @@ def _default_output_path(input_path: Path) -> Path:
 def _ensure_unique_labels(values: list[str], context: str) -> None:
     """Reject duplicate configured labels after normalization.
 
+    This is used for countries and periods. KPI names are deliberately excluded
+    because repeated KPI labels are supported positionally.
+
     :param values: Labels to validate.
     :param context: Human-readable configuration context.
     :raises ValueError: If two labels normalize to the same value.
@@ -187,7 +214,8 @@ def _ensure_unique_labels(values: list[str], context: str) -> None:
             raise ValueError(f"Blank label is not allowed in {context}")
         if normalized in seen:
             raise ValueError(
-                f"Duplicate normalized label in {context}: {seen[normalized]!r} and {value!r}"
+                f"Duplicate normalized label in {context}: "
+                f"{seen[normalized]!r} and {value!r}"
             )
         seen[normalized] = value
 
@@ -230,10 +258,8 @@ def _load_runtime(path: Path, project_dir: Path) -> RuntimeConfig:
             "Input and output workbook paths must differ. "
             "This tool writes to a new file by design."
         )
-
     if input_path.suffix.lower() not in {".xlsx", ".xlsm"}:
         raise ValueError("Only .xlsx and .xlsm workbooks are supported")
-
     if output_path.suffix.lower() != input_path.suffix.lower():
         raise ValueError("Input and output workbook extensions must match")
 
@@ -273,7 +299,6 @@ def _load_countries(path: Path) -> CountryConfig:
             isinstance(member, str) for member in members_raw
         ):
             raise ValueError(f"Country group {group_name!r} must be a list of strings")
-
         if len(members_raw) != len(set(members_raw)):
             raise ValueError(f"Country group {group_name!r} contains duplicate countries")
 
@@ -311,6 +336,9 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
     table_spacing_rows = int(data.get("table_spacing_rows", 3))
     if table_spacing_rows < 1:
         raise ValueError("table_spacing_rows must be at least 1")
+
+    add_source_hyperlinks = bool(data.get("add_source_hyperlinks", True))
+    kpi_title_separator = str(data.get("kpi_title_separator", " | "))
 
     sources_raw = data.get("sources") or {}
     if not isinstance(sources_raw, dict) or not sources_raw:
@@ -365,12 +393,34 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
         validation_sheet=validation_sheet,
         replace_existing_generated_sheets=replace_existing,
         table_spacing_rows=table_spacing_rows,
+        add_source_hyperlinks=add_source_hyperlinks,
+        kpi_title_separator=kpi_title_separator,
         sources=sources,
     )
 
 
+def _optional_text(raw: dict[str, Any], field: str, kpi_name: str) -> str | None:
+    """Read one optional text field from a KPI definition.
+
+    :param raw: Raw KPI mapping.
+    :param field: Field name.
+    :param kpi_name: KPI name for error messages.
+    :return: Stripped text or ``None``.
+    """
+
+    value = raw.get(field)
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"KPI {field} for {kpi_name!r} must be a string")
+    return value.strip() or None
+
+
 def _load_kpis(path: Path, workbook: WorkbookConfig) -> dict[str, tuple[KPIConfig, ...]]:
     """Load KPI configuration by source sheet.
+
+    Duplicate KPI names are valid. Their configuration order is significant and
+    is matched against same-name worksheet occurrences from top to bottom.
 
     :param path: ``kpis.yaml`` path.
     :param workbook: Workbook configuration used for cross-validation.
@@ -392,33 +442,36 @@ def _load_kpis(path: Path, workbook: WorkbookConfig) -> dict[str, tuple[KPIConfi
             raise ValueError(f"KPIs for source {source_name!r} must be a list")
 
         kpis: list[KPIConfig] = []
-        names: list[str] = []
-        for index, raw in enumerate(kpis_raw, start=1):
+        for index, raw in enumerate(kpis_raw):
             if not isinstance(raw, dict):
                 raise ValueError(
-                    f"KPI #{index} for source {source_name!r} must be a mapping"
+                    f"KPI #{index + 1} for source {source_name!r} must be a mapping"
                 )
 
             name = raw.get("name")
             aggregation = raw.get("aggregation")
-            note = raw.get("note")
-
             if not isinstance(name, str) or not name.strip():
                 raise ValueError(
-                    f"KPI #{index} for source {source_name!r} must define a name"
+                    f"KPI #{index + 1} for source {source_name!r} must define a name"
                 )
+            name = name.strip()
             if aggregation not in SUPPORTED_AGGREGATIONS:
                 raise ValueError(
                     f"Unsupported aggregation {aggregation!r} for KPI {name!r}. "
                     f"Allowed values: {sorted(SUPPORTED_AGGREGATIONS)}"
                 )
-            if note is not None and not isinstance(note, str):
-                raise ValueError(f"KPI note for {name!r} must be a string")
 
-            names.append(name)
-            kpis.append(KPIConfig(name=name, aggregation=aggregation, note=note))
+            kpis.append(
+                KPIConfig(
+                    index=index,
+                    name=name,
+                    aggregation=aggregation,
+                    type=_optional_text(raw, "type", name),
+                    subtype=_optional_text(raw, "subtype", name),
+                    note=_optional_text(raw, "note", name),
+                )
+            )
 
-        _ensure_unique_labels(names, f"KPIs for {source_name}")
         result[source_name] = tuple(kpis)
 
     for source_name, source in workbook.sources.items():
