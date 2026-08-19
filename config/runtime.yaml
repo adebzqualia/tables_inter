@@ -1,0 +1,7 @@
+# Paths are resolved relative to the project directory.
+input_workbook: data/Consolidated_POPS.xlsx
+
+# Leave null to generate:
+# Consolidated_POPS_with_intermediary_tables.xlsx
+# next to the input workbook.
+output_workbook: null
