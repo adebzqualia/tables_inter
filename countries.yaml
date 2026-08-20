@@ -1,0 +1,33 @@
+countries:
+  - PFF
+  - Belgium
+  - Netherland
+  - Italy
+  - Spain
+  - Portugal
+  - Germany
+  - UK
+  - Poland
+  - RCS
+  - CM
+  - GER-SEC
+
+country_groups:
+  # Membership was not specified in the business requirements.
+  # Fill these lists with the approved business definitions.
+  TOP8: []
+  TOP9: []
+
+  ALL:
+    - PFF
+    - Belgium
+    - Netherland
+    - Italy
+    - Spain
+    - Portugal
+    - Germany
+    - UK
+    - Poland
+    - RCS
+    - CM
+    - GER-SEC
