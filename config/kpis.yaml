@@ -6,8 +6,15 @@
 #
 # Aggregation metadata remains explicit:
 #   sum   -> currently generates a linked intermediary table + Excel SUM totals
-#   ratio -> recognized but deliberately not generated/aggregated yet
+#   ratio -> country values are linked from source; group totals use ratio_total when configured
 #   skip  -> non-additive/ambiguous metric kept in the catalog for later rules
+#
+# Optional ratio_total syntax for simple numerator/denominator ratios:
+#   ratio_total:
+#     numerator: "NBI (M€)"
+#     denominator: "OUTSTANDING - Av. (M€)"
+#     percent: true
+# Duplicate dependency names can use {name: "TOTAL", occurrence: 2}.
 #
 # Review aggregation classifications with the business before production use.
 sources:
@@ -77,17 +84,29 @@ sources:
     type: NBI (M€)
   - name: NBI / Outstanding (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "NBI (M€)"
+      denominator: "OUTSTANDING - Av. (M€)"
+      percent: true
     type: NBI (M€)
   - name: OPEX (M€)
     aggregation: sum
     type: OPEX (M€)
   - name: OPEX / Outstanding (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "OPEX (M€)"
+      denominator: "OUTSTANDING - Av. (M€)"
+      percent: true
     type: OPEX (M€)
   - name: CoR (M€)
     aggregation: sum
   - name: CoR / Outstanding (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "CoR (M€)"
+      denominator: "OUTSTANDING - Av. (M€)"
+      percent: true
   - name: NIBT (M€)
     aggregation: sum
   - name: Cost Income Ratio
@@ -100,10 +119,18 @@ sources:
     aggregation: sum
   - name: CVC OPS 'Cost Base Vision' / Outstanding Av. (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "CVC OPS Rebased - Cost Base Vision (**) (M€)"
+      denominator: "OUTSTANDING - Av. (M€)"
+      percent: true
   - name: CVC OPS Rebased - P&L Vision (M€)
     aggregation: sum
   - name: CVC OPS 'P&L Vision' / Outstanding Av. (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "CVC OPS Rebased - P&L Vision (M€)"
+      denominator: "OUTSTANDING - Av. (M€)"
+      percent: true
   OBS KPI:
   - name: Total CVC OPS Rebased - COST BASE VISION / Outstanding Av.
     aggregation: ratio
@@ -630,12 +657,20 @@ sources:
     type: ACTIVITY
   - name: 1st Unpaid entries / Outstanding (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "1st Unpaid entries (M€)"
+      denominator: "Outstanding Collection Perimeter Av. (M€)"
+      percent: true
     type: ACTIVITY
   - name: Cost of Risk (M€)
     aggregation: sum
     type: ACTIVITY
   - name: Cost of Risk / Outstanding (%)
     aggregation: ratio
+    ratio_total:
+      numerator: "Cost of Risk (M€)"
+      denominator: "Outstanding Collection Perimeter Av. (M€)"
+      percent: true
     type: ACTIVITY
   - name: 1st Unpaid Efficiency (Amount) (%)
     aggregation: ratio

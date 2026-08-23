@@ -1,3 +1,12 @@
+# v5
+
+- Added configurable rounding (`round_values`, `round_digits`).
+- Ratio KPI country values are now generated as source-linked formulas.
+- Added `ratio_total` numerator/denominator rules for group-level ratio aggregation.
+- Ratio group totals reference intermediary additive TOTAL rows rather than summing/averaging percentages.
+- Added validation warnings for ratio KPIs without a configured group-total rule.
+- Added initial explicit simple-ratio rules where numerator/denominator are unambiguous from the supplied KPI catalog.
+
 # Changelog
 
 ## v3

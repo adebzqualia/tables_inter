@@ -19,7 +19,7 @@ def _configuration_warnings(config) -> list[ValidationIssue]:
     :return: Configuration warnings suitable for the validation sheet.
     """
 
-    return [
+    issues = [
         ValidationIssue(
             country=None,
             source_sheet=None,
@@ -34,6 +34,27 @@ def _configuration_warnings(config) -> list[ValidationIssue]:
         for group_name, members in config.countries.groups.items()
         if not members
     ]
+
+    for source_name, source in config.workbook.sources.items():
+        if not source.enabled:
+            continue
+        for kpi in config.kpis_by_source[source_name]:
+            if kpi.aggregation == "ratio" and kpi.ratio_total is None:
+                issues.append(
+                    ValidationIssue(
+                        country=None,
+                        source_sheet=source_name,
+                        kpi=kpi.display_name(config.workbook.kpi_title_separator),
+                        period=None,
+                        issue="RATIO_TOTAL_RULE_MISSING",
+                        details=(
+                            "Country values are linked from the source sheet, but "
+                            "TOP8/TOP9/ALL totals are blank because no ratio_total "
+                            "numerator/denominator rule is configured."
+                        ),
+                    )
+                )
+    return issues
 
 
 def main() -> None:
@@ -98,8 +119,16 @@ def main() -> None:
     print(f"Created: {output_path}")
     print(f"Validation issues: {len(issues)}")
     print("Intermediary country values: Excel links to resolved source cells")
-    print("Country-group totals: native Excel SUM formulas")
-    print(f"Configured ratio KPIs skipped: {ratio_count}")
+    configured_ratio_totals = sum(
+        1
+        for source_name, source in config.workbook.sources.items()
+        if source.enabled
+        for kpi in config.kpis_by_source[source_name]
+        if kpi.aggregation == "ratio" and kpi.ratio_total is not None
+    )
+    print("Additive country-group totals: native Excel SUM formulas")
+    print(f"Ratio KPI tables generated: {ratio_count}")
+    print(f"Ratio KPIs with configured group-total rules: {configured_ratio_totals}")
     print(f"Explicitly skipped KPIs: {skip_count}")
 
 

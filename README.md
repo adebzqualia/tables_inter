@@ -113,3 +113,38 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+
+## Rounding
+
+`config/sheets.yaml` now contains:
+
+```yaml
+round_values: true
+round_digits: 0
+```
+
+When enabled, generated country values and totals use Excel `ROUND`. Percentage
+cells are rounded in percentage points while keeping Excel's decimal percentage
+representation. Set `round_values: false` to preserve the source decimals.
+
+## Simple ratio totals
+
+All configured `aggregation: ratio` KPIs now get intermediary country rows linked
+to the already-computed ratio cell in each country sheet. Group totals are **not**
+summed or averaged. For a simple ratio, configure its additive components:
+
+```yaml
+- name: "NBI / Outstanding (%)"
+  aggregation: ratio
+  ratio_total:
+    numerator: "NBI (M€)"
+    denominator: "OUTSTANDING - Av. (M€)"
+    percent: true
+```
+
+Then `TOTAL TOP8`, `TOTAL TOP9`, and `TOTAL ALL` are Excel formulas equivalent to
+`TOTAL <group> NBI / TOTAL <group> Outstanding`, referencing the intermediary
+additive total rows. Ratio KPIs without `ratio_total` still show country values,
+but group totals remain blank and `INTER_VALIDATION` reports
+`RATIO_TOTAL_RULE_MISSING`.

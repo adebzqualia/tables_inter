@@ -406,7 +406,7 @@ def _extract_numeric_value(
     column: int,
     values_ws: Worksheet,
     formulas_ws: Worksheet,
-) -> tuple[int | float | None, str, ValidationIssue | None]:
+) -> tuple[int | float | None, str, str, ValidationIssue | None]:
     """Inspect one additive KPI value while retaining its source coordinate.
 
     :param country: Country/entity name.
@@ -417,18 +417,19 @@ def _extract_numeric_value(
     :param column: Resolved period column.
     :param values_ws: Worksheet containing cached formula results.
     :param formulas_ws: Formula-preserving worksheet.
-    :return: Numeric cached value, source coordinate, and optional diagnostic.
+    :return: Numeric cached value, source coordinate, source number format, and optional diagnostic.
     """
 
     formula_cell = _merged_anchor(formulas_ws, row, column)
     value_cell = _merged_anchor(values_ws, row, column)
     coordinate = formula_cell.coordinate
+    number_format = getattr(formula_cell, "number_format", "General") or "General"
     raw_value = value_cell.value
 
     if _is_excel_error(value_cell, raw_value) or _is_excel_error(
         formula_cell, formula_cell.value
     ):
-        return None, coordinate, ValidationIssue(
+        return None, coordinate, number_format, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
             kpi=kpi_display,
@@ -438,7 +439,7 @@ def _extract_numeric_value(
         )
 
     if getattr(formula_cell, "data_type", None) == "f" and raw_value is None:
-        return None, coordinate, ValidationIssue(
+        return None, coordinate, number_format, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
             kpi=kpi_display,
@@ -452,7 +453,7 @@ def _extract_numeric_value(
         )
 
     if raw_value is None:
-        return None, coordinate, ValidationIssue(
+        return None, coordinate, number_format, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
             kpi=kpi_display,
@@ -462,7 +463,7 @@ def _extract_numeric_value(
         )
 
     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float, Decimal)):
-        return None, coordinate, ValidationIssue(
+        return None, coordinate, number_format, ValidationIssue(
             country=country,
             source_sheet=sheet_name,
             kpi=kpi_display,
@@ -473,7 +474,7 @@ def _extract_numeric_value(
 
     if isinstance(raw_value, Decimal):
         raw_value = float(raw_value)
-    return raw_value, coordinate, None
+    return raw_value, coordinate, number_format, None
 
 
 def _empty_records_for_sheet(
@@ -492,7 +493,7 @@ def _empty_records_for_sheet(
     :param periods: Configured periods.
     :param kpis: Configured KPIs.
     :param title_separator: Separator used in display labels.
-    :return: Missing extraction records for ``sum`` KPIs.
+    :return: Missing extraction records for generated ``sum`` and ``ratio`` KPIs.
     """
 
     return [
@@ -506,9 +507,10 @@ def _empty_records_for_sheet(
             period=period,
             value=None,
             coordinate=None,
+            number_format=None,
         )
         for kpi in kpis
-        if kpi.aggregation == "sum"
+        if kpi.aggregation in {"sum", "ratio"}
         for period in periods
     ]
 
@@ -521,8 +523,8 @@ def extract_workbook(
     """Extract all enabled source sheets from the consolidated workbook.
 
     Relevant worksheets are scanned once. Repeated KPI names are mapped by
-    configuration order to worksheet order. Only additive KPIs produce output
-    records; ratio/skip KPIs are resolved but deliberately not aggregated yet.
+    configuration order to worksheet order. Additive and ratio KPIs produce output
+    records; ``skip`` KPIs are resolved but not output.
 
     :param values_wb: Workbook loaded with ``data_only=True``.
     :param formulas_wb: Workbook loaded with ``data_only=False``.
@@ -539,7 +541,7 @@ def extract_workbook(
             continue
 
         kpis = config.kpis_by_source[source_name]
-        sum_kpis = tuple(kpi for kpi in kpis if kpi.aggregation == "sum")
+        output_kpis = tuple(kpi for kpi in kpis if kpi.aggregation in {"sum", "ratio"})
 
         for country in config.countries.countries:
             sheet_name = _physical_sheet_name(
@@ -584,7 +586,7 @@ def extract_workbook(
             )
             issues.extend(resolved.issues)
 
-            for kpi in sum_kpis:
+            for kpi in output_kpis:
                 kpi_ref = resolved.kpis[kpi.index]
                 kpi_display = kpi.display_name(separator)
 
@@ -602,11 +604,12 @@ def extract_workbook(
                                 period=period,
                                 value=None,
                                 coordinate=None,
+                                number_format=None,
                             )
                         )
                         continue
 
-                    value, coordinate, issue = _extract_numeric_value(
+                    value, coordinate, number_format, issue = _extract_numeric_value(
                         country=country,
                         sheet_name=sheet_name,
                         kpi_display=kpi_display,
@@ -627,6 +630,7 @@ def extract_workbook(
                             period=period,
                             value=value,
                             coordinate=coordinate,
+                            number_format=number_format,
                         )
                     )
                     if issue is not None:

@@ -11,6 +11,11 @@ add_source_hyperlinks: true
 # Optional type/subtype values are display-only and appear before the KPI name.
 kpi_title_separator: " | "
 
+# Optional rounding for generated intermediary values and totals.
+# This uses standard Excel ROUND semantics. Set false to preserve decimals.
+round_values: true
+round_digits: 0
+
 # All source sheets use the same configured period columns for this version.
 sources:
   ID Card:

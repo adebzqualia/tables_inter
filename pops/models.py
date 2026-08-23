@@ -39,6 +39,7 @@ class ExtractionRecord:
     :param period: Period label.
     :param value: Last cached numeric value, or ``None`` if invalid/missing.
     :param coordinate: Resolved source cell coordinate, if available.
+    :param number_format: Source Excel number format, if a cell was resolved.
     """
 
     country: str
@@ -50,3 +51,4 @@ class ExtractionRecord:
     period: str
     value: int | float | None
     coordinate: str | None
+    number_format: str | None = None

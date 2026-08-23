@@ -63,6 +63,8 @@ class WorkbookConfig:
     :param table_spacing_rows: Empty rows between intermediary KPI tables.
     :param add_source_hyperlinks: Whether intermediary cells link to their source cell.
     :param kpi_title_separator: Separator used between type/subtype/name in titles.
+    :param round_values: Whether generated numeric values are rounded in Excel formulas.
+    :param round_digits: Decimal digits used when ``round_values`` is enabled.
     :param sources: Ordered logical source-sheet definitions.
     """
 
@@ -72,7 +74,37 @@ class WorkbookConfig:
     table_spacing_rows: int
     add_source_hyperlinks: bool
     kpi_title_separator: str
+    round_values: bool
+    round_digits: int
     sources: dict[str, SheetConfig]
+
+
+@dataclass(frozen=True)
+class KPIRefConfig:
+    """Reference to another KPI occurrence in the same source sheet.
+
+    :param name: Configured KPI name.
+    :param occurrence: One-based occurrence among same-name configured KPIs.
+    """
+
+    name: str
+    occurrence: int = 1
+
+
+@dataclass(frozen=True)
+class RatioTotalConfig:
+    """Rule for aggregating a simple ratio at country-group level.
+
+    :param numerator: Additive KPI used as numerator.
+    :param denominator: Additive KPI used as denominator.
+    :param multiplier: Optional numeric scale applied after division.
+    :param percent: Whether the ratio is an Excel percentage value.
+    """
+
+    numerator: KPIRefConfig
+    denominator: KPIRefConfig
+    multiplier: float = 1.0
+    percent: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,6 +121,7 @@ class KPIConfig:
     :param type: Optional display-only KPI type/context.
     :param subtype: Optional display-only KPI subtype/context.
     :param note: Optional business note.
+    :param ratio_total: Optional group-total rule for simple ratios.
     """
 
     index: int
@@ -97,6 +130,7 @@ class KPIConfig:
     type: str | None = None
     subtype: str | None = None
     note: str | None = None
+    ratio_total: RatioTotalConfig | None = None
 
     def display_name(self, separator: str = " | ") -> str:
         """Build the intermediary title without repeating identical metadata.
@@ -345,6 +379,10 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
 
     add_source_hyperlinks = bool(data.get("add_source_hyperlinks", True))
     kpi_title_separator = str(data.get("kpi_title_separator", " | "))
+    round_values = bool(data.get("round_values", False))
+    round_digits = int(data.get("round_digits", 0))
+    if round_digits < 0 or round_digits > 10:
+        raise ValueError("round_digits must be between 0 and 10")
 
     sources_raw = data.get("sources") or {}
     if not isinstance(sources_raw, dict) or not sources_raw:
@@ -401,6 +439,8 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
         table_spacing_rows=table_spacing_rows,
         add_source_hyperlinks=add_source_hyperlinks,
         kpi_title_separator=kpi_title_separator,
+        round_values=round_values,
+        round_digits=round_digits,
         sources=sources,
     )
 
@@ -421,6 +461,123 @@ def _optional_text(raw: dict[str, Any], field: str, kpi_name: str) -> str | None
         raise ValueError(f"KPI {field} for {kpi_name!r} must be a string")
     return value.strip() or None
 
+
+def _load_kpi_ref(value: object, field: str, kpi_name: str) -> KPIRefConfig:
+    """Load a simple KPI reference used by a ratio-total rule.
+
+    A reference can be either a KPI name string or a mapping with ``name`` and
+    optional one-based ``occurrence`` for duplicate configured KPI names.
+
+    :param value: Raw YAML reference.
+    :param field: Reference field name for diagnostics.
+    :param kpi_name: Ratio KPI owning the reference.
+    :return: Parsed KPI reference.
+    """
+
+    if isinstance(value, str):
+        name = value.strip()
+        occurrence = 1
+    elif isinstance(value, dict):
+        name_raw = value.get("name")
+        if not isinstance(name_raw, str) or not name_raw.strip():
+            raise ValueError(
+                f"ratio_total.{field} for KPI {kpi_name!r} must define a KPI name"
+            )
+        name = name_raw.strip()
+        occurrence = int(value.get("occurrence", 1))
+    else:
+        raise ValueError(
+            f"ratio_total.{field} for KPI {kpi_name!r} must be a string or mapping"
+        )
+
+    if occurrence < 1:
+        raise ValueError(
+            f"ratio_total.{field}.occurrence for KPI {kpi_name!r} must be >= 1"
+        )
+    return KPIRefConfig(name=name, occurrence=occurrence)
+
+
+def _load_ratio_total(raw: dict[str, Any], kpi_name: str) -> RatioTotalConfig | None:
+    """Load an optional simple-ratio group-total rule.
+
+    :param raw: Raw KPI YAML mapping.
+    :param kpi_name: KPI name for diagnostics.
+    :return: Parsed rule or ``None``.
+    """
+
+    value = raw.get("ratio_total")
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"ratio_total for KPI {kpi_name!r} must be a mapping")
+
+    if "numerator" not in value or "denominator" not in value:
+        raise ValueError(
+            f"ratio_total for KPI {kpi_name!r} must define numerator and denominator"
+        )
+
+    multiplier = float(value.get("multiplier", 1.0))
+    return RatioTotalConfig(
+        numerator=_load_kpi_ref(value["numerator"], "numerator", kpi_name),
+        denominator=_load_kpi_ref(value["denominator"], "denominator", kpi_name),
+        multiplier=multiplier,
+        percent=bool(value.get("percent", False)),
+    )
+
+
+def _resolve_kpi_ref_index(
+    kpis: tuple[KPIConfig, ...],
+    ref: KPIRefConfig,
+    owner: KPIConfig,
+    source_name: str,
+) -> int:
+    """Resolve and validate one ratio dependency against configured KPIs.
+
+    :param kpis: KPIs configured for one source sheet.
+    :param ref: KPI reference to resolve.
+    :param owner: Ratio KPI containing the rule.
+    :param source_name: Logical source-sheet name.
+    :return: Zero-based configured KPI index.
+    :raises ValueError: If the reference is missing, ambiguous, or non-additive.
+    """
+
+    matches = [
+        kpi for kpi in kpis if normalize_label(kpi.name) == normalize_label(ref.name)
+    ]
+    if len(matches) < ref.occurrence:
+        raise ValueError(
+            f"Ratio KPI {owner.name!r} in {source_name!r} references "
+            f"{ref.name!r} occurrence {ref.occurrence}, but only {len(matches)} exist"
+        )
+    target = matches[ref.occurrence - 1]
+    if target.aggregation != "sum":
+        raise ValueError(
+            f"Ratio KPI {owner.name!r} in {source_name!r} must reference additive "
+            f"KPIs; {target.name!r} is configured as {target.aggregation!r}"
+        )
+    return target.index
+
+
+def resolve_ratio_total_indices(
+    kpis: tuple[KPIConfig, ...],
+    ratio_kpi: KPIConfig,
+    source_name: str,
+) -> tuple[int, int] | None:
+    """Resolve numerator/denominator KPI indexes for a configured ratio rule.
+
+    :param kpis: KPIs configured for one source sheet.
+    :param ratio_kpi: Ratio KPI.
+    :param source_name: Logical source-sheet name.
+    :return: ``(numerator_index, denominator_index)`` or ``None``.
+    """
+
+    rule = ratio_kpi.ratio_total
+    if rule is None:
+        return None
+    return (
+        _resolve_kpi_ref_index(kpis, rule.numerator, ratio_kpi, source_name),
+        _resolve_kpi_ref_index(kpis, rule.denominator, ratio_kpi, source_name),
+    )
 
 def _load_kpis(path: Path, workbook: WorkbookConfig) -> dict[str, tuple[KPIConfig, ...]]:
     """Load KPI configuration by source sheet.
@@ -475,10 +632,20 @@ def _load_kpis(path: Path, workbook: WorkbookConfig) -> dict[str, tuple[KPIConfi
                     type=_optional_text(raw, "type", name),
                     subtype=_optional_text(raw, "subtype", name),
                     note=_optional_text(raw, "note", name),
+                    ratio_total=_load_ratio_total(raw, name),
                 )
             )
 
-        result[source_name] = tuple(kpis)
+        configured = tuple(kpis)
+        for kpi in configured:
+            if kpi.ratio_total is not None:
+                if kpi.aggregation != "ratio":
+                    raise ValueError(
+                        f"KPI {kpi.name!r} in {source_name!r} defines ratio_total "
+                        "but is not configured as aggregation: ratio"
+                    )
+                resolve_ratio_total_indices(configured, kpi, source_name)
+        result[source_name] = configured
 
     for source_name, source in workbook.sources.items():
         if source.enabled and source_name not in result:
