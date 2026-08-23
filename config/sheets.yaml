@@ -11,11 +11,12 @@ add_source_hyperlinks: true
 # Optional type/subtype values are display-only and appear before the KPI name.
 kpi_title_separator: " | "
 
+# All source sheets use the same configured period columns for this version.
 sources:
   ID Card:
     enabled: true
     output_sheet: INTER_ID_CARD
-    periods:
+    periods: &common_periods
       - "2024"
       - "2025"
       - "F1 2026"
@@ -29,60 +30,62 @@ sources:
       - "B 2030"
       - "PLAN 2030"
 
-  # The KPI catalogs below are already populated in kpis.yaml. They remain
-  # disabled until their exact period/header labels are configured here; those
-  # period lists were not provided, so the program does not guess them.
   OBS KPI:
-    enabled: false
+    enabled: true
     output_sheet: INTER_OBS_KPI
-    periods: []
+    periods: *common_periods
 
   FTE:
-    enabled: false
+    enabled: true
     output_sheet: INTER_FTE
-    periods: []
+    periods: *common_periods
 
   CVC:
-    enabled: false
+    enabled: true
     output_sheet: INTER_CVC
-    periods: []
+    periods: *common_periods
 
   GRANTING:
-    enabled: false
+    enabled: true
     output_sheet: INTER_GRANTING
-    periods: []
+    periods: *common_periods
 
   CS:
-    enabled: false
+    enabled: true
     output_sheet: INTER_CS
-    periods: []
+    periods: *common_periods
 
   CORE:
-    enabled: false
+    enabled: true
     output_sheet: INTER_CORE
-    periods: []
+    periods: *common_periods
 
   NPL SALES:
-    enabled: false
+    enabled: true
     output_sheet: INTER_NPL_SALES
-    periods: []
+    periods: *common_periods
 
   KPI:
-    enabled: false
-    periods: []
+    enabled: true
+    output_sheet: INTER_KPI
+    periods: *common_periods
 
   NPL SALES2:
-    enabled: false
-    periods: []
+    enabled: true
+    output_sheet: INTER_NPL_SALES2
+    periods: *common_periods
 
   CREDIT BUREAU:
-    enabled: false
-    periods: []
+    enabled: true
+    output_sheet: INTER_CREDIT_BUREAU
+    periods: *common_periods
 
   MBS (OPEX):
-    enabled: false
-    periods: []
+    enabled: true
+    output_sheet: INTER_MBS_OPEX
+    periods: *common_periods
 
   PROCUREMENT:
-    enabled: false
-    periods: []
+    enabled: true
+    output_sheet: INTER_PROCUREMENT
+    periods: *common_periods
