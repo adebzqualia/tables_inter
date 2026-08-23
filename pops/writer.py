@@ -255,18 +255,26 @@ def _write_source_sheet(
                     continue
 
                 source_percent = _is_percent_format(record.number_format)
+                is_ratio = kpi.aggregation == "ratio"
+                rounding_digits = (
+                    config.workbook.ratio_round_digits
+                    if is_ratio
+                    else config.workbook.round_digits
+                )
+                percent_output = is_ratio or source_percent
+
                 cell.value = _source_formula(
                     record.source_sheet,
                     record.coordinate,
                     round_values=config.workbook.round_values,
-                    round_digits=config.workbook.round_digits,
-                    percent=source_percent,
+                    round_digits=rounding_digits,
+                    percent=percent_output,
                 )
 
                 if config.workbook.round_values:
                     cell.number_format = _rounded_number_format(
-                        source_percent,
-                        config.workbook.round_digits,
+                        percent_output,
+                        rounding_digits,
                     )
                 elif record.number_format:
                     cell.number_format = record.number_format
@@ -322,17 +330,17 @@ def _write_source_sheet(
                         multiplier=kpi.ratio_total.multiplier,
                         percent=kpi.ratio_total.percent,
                         round_values=config.workbook.round_values,
-                        round_digits=config.workbook.round_digits,
+                        round_digits=config.workbook.ratio_round_digits,
                     )
                     if kpi.ratio_total.percent:
                         cell.number_format = _rounded_number_format(
                             True,
-                            config.workbook.round_digits,
+                            config.workbook.ratio_round_digits,
                         )
                     elif config.workbook.round_values:
                         cell.number_format = _rounded_number_format(
                             False,
-                            config.workbook.round_digits,
+                            config.workbook.ratio_round_digits,
                         )
 
                 else:

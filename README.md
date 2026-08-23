@@ -122,11 +122,15 @@ python main.py
 ```yaml
 round_values: true
 round_digits: 0
+ratio_round_digits: 1
 ```
 
-When enabled, generated country values and totals use Excel `ROUND`. Percentage
-cells are rounded in percentage points while keeping Excel's decimal percentage
-representation. Set `round_values: false` to preserve the source decimals.
+When enabled, generated country values and totals use Excel `ROUND`. Ordinary
+numeric KPIs use `round_digits` (default `0`), while ratio KPIs use
+`ratio_round_digits` (default `1`) and are displayed as percentages. For example,
+`12.34%` becomes `12.3%`, while `4331.9` becomes `4332`. Excel's underlying
+percentage representation remains decimal. Set `round_values: false` to preserve
+the source decimals and formats.
 
 ## Simple ratio totals
 

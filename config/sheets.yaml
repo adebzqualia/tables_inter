@@ -12,9 +12,11 @@ add_source_hyperlinks: true
 kpi_title_separator: " | "
 
 # Optional rounding for generated intermediary values and totals.
-# This uses standard Excel ROUND semantics. Set false to preserve decimals.
+# Non-ratio KPIs use round_digits; ratio KPIs keep their own decimal precision.
+# Example: 4331.9 -> 4332, while 12.34% -> 12.3%.
 round_values: true
 round_digits: 0
+ratio_round_digits: 1
 
 # All source sheets use the same configured period columns for this version.
 sources:

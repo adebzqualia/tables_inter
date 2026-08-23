@@ -64,7 +64,8 @@ class WorkbookConfig:
     :param add_source_hyperlinks: Whether intermediary cells link to their source cell.
     :param kpi_title_separator: Separator used between type/subtype/name in titles.
     :param round_values: Whether generated numeric values are rounded in Excel formulas.
-    :param round_digits: Decimal digits used when ``round_values`` is enabled.
+    :param round_digits: Decimal digits used for non-ratio values when rounding is enabled.
+    :param ratio_round_digits: Decimal digits used for ratio percentages.
     :param sources: Ordered logical source-sheet definitions.
     """
 
@@ -76,6 +77,7 @@ class WorkbookConfig:
     kpi_title_separator: str
     round_values: bool
     round_digits: int
+    ratio_round_digits: int
     sources: dict[str, SheetConfig]
 
 
@@ -381,8 +383,11 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
     kpi_title_separator = str(data.get("kpi_title_separator", " | "))
     round_values = bool(data.get("round_values", False))
     round_digits = int(data.get("round_digits", 0))
+    ratio_round_digits = int(data.get("ratio_round_digits", 1))
     if round_digits < 0 or round_digits > 10:
         raise ValueError("round_digits must be between 0 and 10")
+    if ratio_round_digits < 0 or ratio_round_digits > 10:
+        raise ValueError("ratio_round_digits must be between 0 and 10")
 
     sources_raw = data.get("sources") or {}
     if not isinstance(sources_raw, dict) or not sources_raw:
@@ -441,6 +446,7 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
         kpi_title_separator=kpi_title_separator,
         round_values=round_values,
         round_digits=round_digits,
+        ratio_round_digits=ratio_round_digits,
         sources=sources,
     )
 

@@ -1,5 +1,6 @@
 # v5
 
+- Ratio percentages now use separate `ratio_round_digits` precision (default `1`), so values display as `X.X%` instead of whole percentages.
 - Added configurable rounding (`round_values`, `round_digits`).
 - Ratio KPI country values are now generated as source-linked formulas.
 - Added `ratio_total` numerator/denominator rules for group-level ratio aggregation.
