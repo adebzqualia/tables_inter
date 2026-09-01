@@ -18,6 +18,26 @@ round_values: true
 round_digits: 0
 ratio_round_digits: 1
 
+# Legacy strict simple-ratio inference used only if recursive_formula_totals is
+# disabled. With recursive tracing enabled below, cross-sheet formula lineage is
+# used instead.
+infer_ratio_totals_from_formulas: true
+
+
+# Recursive formula lineage. Derived KPIs may follow references through the KPI
+# sheet and back into other operational sheets. Only required supporting KPI
+# tables are materialized on INTER_DEPENDENCIES.
+recursive_formula_totals: true
+dependency_sheet: INTER_DEPENDENCIES
+aggregation_control_sheet: INTER_CONFIG
+kpi_source_name: KPI
+kpi_name_header: KPI
+formula_max_depth: 20
+
+# Newly discovered ordinary/value KPIs default to SUM. Operational users can
+# switch any value KPI between SUM and AVERAGE directly in INTER_CONFIG.
+default_dependency_aggregation: sum
+
 # All source sheets use the same configured period columns for this version.
 sources:
   ID Card:

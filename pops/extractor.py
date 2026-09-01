@@ -493,7 +493,7 @@ def _empty_records_for_sheet(
     :param periods: Configured periods.
     :param kpis: Configured KPIs.
     :param title_separator: Separator used in display labels.
-    :return: Missing extraction records for generated ``sum`` and ``ratio`` KPIs.
+    :return: Missing extraction records for generated ``sum``, ``average`` and ``ratio`` KPIs.
     """
 
     return [
@@ -510,7 +510,7 @@ def _empty_records_for_sheet(
             number_format=None,
         )
         for kpi in kpis
-        if kpi.aggregation in {"sum", "ratio"}
+        if kpi.aggregation in {"sum", "average", "ratio"}
         for period in periods
     ]
 
@@ -523,7 +523,7 @@ def extract_workbook(
     """Extract all enabled source sheets from the consolidated workbook.
 
     Relevant worksheets are scanned once. Repeated KPI names are mapped by
-    configuration order to worksheet order. Additive and ratio KPIs produce output
+    configuration order to worksheet order. Value-aggregated and ratio KPIs produce output
     records; ``skip`` KPIs are resolved but not output.
 
     :param values_wb: Workbook loaded with ``data_only=True``.
@@ -541,7 +541,7 @@ def extract_workbook(
             continue
 
         kpis = config.kpis_by_source[source_name]
-        output_kpis = tuple(kpi for kpi in kpis if kpi.aggregation in {"sum", "ratio"})
+        output_kpis = tuple(kpi for kpi in kpis if kpi.aggregation in {"sum", "average", "ratio"})
 
         for country in config.countries.countries:
             sheet_name = _physical_sheet_name(

@@ -1,34 +1,24 @@
-# v5
-
-- Ratio percentages now use separate `ratio_round_digits` precision (default `1`), so values display as `X.X%` instead of whole percentages.
-- Added configurable rounding (`round_values`, `round_digits`).
-- Ratio KPI country values are now generated as source-linked formulas.
-- Added `ratio_total` numerator/denominator rules for group-level ratio aggregation.
-- Ratio group totals reference intermediary additive TOTAL rows rather than summing/averaging percentages.
-- Added validation warnings for ratio KPIs without a configured group-total rule.
-- Added initial explicit simple-ratio rules where numerator/denominator are unambiguous from the supplied KPI catalog.
-
 # Changelog
 
-## v3
+## v8
 
-- Added/confirmed `add_source_hyperlinks` as an explicit navigation-only switch.
-  Source-cell formulas are retained whether clickable navigation is on or off.
-- Added the complete ordered KPI catalogs supplied for ID Card, OBS KPI, FTE,
-  CVC, GRANTING, CS, CORE, and NPL SALES.
-- Added type/subtype metadata throughout those catalogs.
-- KPI titles now avoid repeating identical adjacent type/subtype/name text.
-- Preserved positional duplicate-name matching independently per country.
-- Added output-sheet placeholders for each newly catalogued source.
-- Kept non-ID Card sources disabled until their exact period lists are supplied,
-  rather than assuming they use ID Card periods.
+- Added recursive, cross-sheet formula lineage for derived/ratio KPIs.
+- Formula tracing can follow operational sheet -> KPI sheet -> other KPI formulas
+  -> configured operational KPIs recursively.
+- Automatically discovers KPI-sheet dependencies using the `KPI` name column.
+- Added `INTER_DEPENDENCIES` containing only prerequisite KPI tables required by
+  traced formulas.
+- Added `INTER_CONFIG` with live Excel SUM/AVERAGE dropdowns for ordinary value
+  KPIs; group totals update without rerunning Python.
+- Added `average` as a supported initial KPI aggregation type.
+- Formula-derived dependency totals use the reconstructed source formula rather
+  than summing/averaging country ratios.
+- Added cross-country semantic-formula consensus checks.
+- Added cycle, recursion-depth, external-reference, range, and unresolved-lineage
+  diagnostics.
+- Percentage dependencies without a traceable formula remain blank at group
+  level instead of being averaged automatically.
 
-## v2
+## v7
 
-- Country intermediary values use native Excel formulas referencing resolved
-  source cells.
-- Optional internal hyperlinks jump from intermediary cells to source cells.
-- Group totals use native Excel `SUM` formulas.
-- Added display-only KPI type/subtype fields.
-- Added positional duplicate KPI-name handling with count-mismatch validation.
-- Generated workbooks request automatic/full Excel recalculation on open.
+- Added strict formula-based inference for simple ratio totals.

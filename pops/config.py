@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-SUPPORTED_AGGREGATIONS = {"sum", "ratio", "skip"}
+SUPPORTED_AGGREGATIONS = {"sum", "average", "ratio", "skip"}
 _INVALID_SHEET_CHARS = re.compile(r"[\\/*?:\[\]]")
 
 
@@ -66,6 +66,14 @@ class WorkbookConfig:
     :param round_values: Whether generated numeric values are rounded in Excel formulas.
     :param round_digits: Decimal digits used for non-ratio values when rounding is enabled.
     :param ratio_round_digits: Decimal digits used for ratio percentages.
+    :param infer_ratio_totals_from_formulas: Whether missing ratio-total rules may be inferred from source formulas.
+    :param recursive_formula_totals: Whether formula-derived totals are traced recursively across worksheets.
+    :param dependency_sheet: Generated sheet containing automatically discovered KPI dependencies.
+    :param aggregation_control_sheet: Generated sheet containing live SUM/AVERAGE controls.
+    :param kpi_source_name: Logical source sheet used as the main KPI catalogue.
+    :param kpi_name_header: Header identifying the KPI-name column in the KPI sheet.
+    :param formula_max_depth: Maximum recursive formula-tracing depth.
+    :param default_dependency_aggregation: Default aggregation for discovered non-formula values.
     :param sources: Ordered logical source-sheet definitions.
     """
 
@@ -78,6 +86,14 @@ class WorkbookConfig:
     round_values: bool
     round_digits: int
     ratio_round_digits: int
+    infer_ratio_totals_from_formulas: bool
+    recursive_formula_totals: bool
+    dependency_sheet: str
+    aggregation_control_sheet: str
+    kpi_source_name: str
+    kpi_name_header: str
+    formula_max_depth: int
+    default_dependency_aggregation: str
     sources: dict[str, SheetConfig]
 
 
@@ -384,6 +400,24 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
     round_values = bool(data.get("round_values", False))
     round_digits = int(data.get("round_digits", 0))
     ratio_round_digits = int(data.get("ratio_round_digits", 1))
+    infer_ratio_totals_from_formulas = bool(
+        data.get("infer_ratio_totals_from_formulas", True)
+    )
+    recursive_formula_totals = bool(data.get("recursive_formula_totals", True))
+    dependency_sheet = str(data.get("dependency_sheet", "INTER_DEPENDENCIES"))
+    aggregation_control_sheet = str(data.get("aggregation_control_sheet", "INTER_CONFIG"))
+    kpi_source_name = str(data.get("kpi_source_name", "KPI"))
+    kpi_name_header = str(data.get("kpi_name_header", "KPI"))
+    formula_max_depth = int(data.get("formula_max_depth", 20))
+    default_dependency_aggregation = str(
+        data.get("default_dependency_aggregation", "sum")
+    ).strip().lower()
+    _validate_sheet_name(dependency_sheet, "dependency_sheet")
+    _validate_sheet_name(aggregation_control_sheet, "aggregation_control_sheet")
+    if formula_max_depth < 1 or formula_max_depth > 100:
+        raise ValueError("formula_max_depth must be between 1 and 100")
+    if default_dependency_aggregation not in {"sum", "average"}:
+        raise ValueError("default_dependency_aggregation must be sum or average")
     if round_digits < 0 or round_digits > 10:
         raise ValueError("round_digits must be between 0 and 10")
     if ratio_round_digits < 0 or ratio_round_digits > 10:
@@ -394,7 +428,7 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
         raise ValueError("sheets.yaml must define at least one source sheet")
 
     sources: dict[str, SheetConfig] = {}
-    output_names: list[str] = [validation_sheet]
+    output_names: list[str] = [validation_sheet, dependency_sheet, aggregation_control_sheet]
 
     for source_name, source_raw in sources_raw.items():
         if not isinstance(source_name, str) or not source_name.strip():
@@ -447,6 +481,14 @@ def _load_workbook_config(path: Path) -> WorkbookConfig:
         round_values=round_values,
         round_digits=round_digits,
         ratio_round_digits=ratio_round_digits,
+        infer_ratio_totals_from_formulas=infer_ratio_totals_from_formulas,
+        recursive_formula_totals=recursive_formula_totals,
+        dependency_sheet=dependency_sheet,
+        aggregation_control_sheet=aggregation_control_sheet,
+        kpi_source_name=kpi_source_name,
+        kpi_name_header=kpi_name_header,
+        formula_max_depth=formula_max_depth,
+        default_dependency_aggregation=default_dependency_aggregation,
         sources=sources,
     )
 
@@ -544,7 +586,7 @@ def _resolve_kpi_ref_index(
     :param owner: Ratio KPI containing the rule.
     :param source_name: Logical source-sheet name.
     :return: Zero-based configured KPI index.
-    :raises ValueError: If the reference is missing, ambiguous, or non-additive.
+    :raises ValueError: If the reference is missing, ambiguous, or not value-aggregated.
     """
 
     matches = [
@@ -556,9 +598,9 @@ def _resolve_kpi_ref_index(
             f"{ref.name!r} occurrence {ref.occurrence}, but only {len(matches)} exist"
         )
     target = matches[ref.occurrence - 1]
-    if target.aggregation != "sum":
+    if target.aggregation not in {"sum", "average"}:
         raise ValueError(
-            f"Ratio KPI {owner.name!r} in {source_name!r} must reference additive "
+            f"Ratio KPI {owner.name!r} in {source_name!r} must reference value-aggregated "
             f"KPIs; {target.name!r} is configured as {target.aggregation!r}"
         )
     return target.index

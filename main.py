@@ -7,6 +7,8 @@ from openpyxl import load_workbook
 from pops.config import load_app_config
 from pops.extractor import extract_workbook
 from pops.models import ValidationIssue
+from pops.lineage import build_lineage_plan
+from pops.ratio_inference import resolve_ratio_total_rules
 from pops.writer import write_generated_sheets
 
 CONFIG_DIR = Path(__file__).resolve().parent / "config"
@@ -35,25 +37,6 @@ def _configuration_warnings(config) -> list[ValidationIssue]:
         if not members
     ]
 
-    for source_name, source in config.workbook.sources.items():
-        if not source.enabled:
-            continue
-        for kpi in config.kpis_by_source[source_name]:
-            if kpi.aggregation == "ratio" and kpi.ratio_total is None:
-                issues.append(
-                    ValidationIssue(
-                        country=None,
-                        source_sheet=source_name,
-                        kpi=kpi.display_name(config.workbook.kpi_title_separator),
-                        period=None,
-                        issue="RATIO_TOTAL_RULE_MISSING",
-                        details=(
-                            "Country values are linked from the source sheet, but "
-                            "TOP8/TOP9/ALL totals are blank because no ratio_total "
-                            "numerator/denominator rule is configured."
-                        ),
-                    )
-                )
     return issues
 
 
@@ -91,12 +74,25 @@ def main() -> None:
         formulas_wb=formulas_wb,
         config=config,
     )
-    issues = _configuration_warnings(config) + issues
+    ratio_total_rules, ratio_issues = resolve_ratio_total_rules(
+        formulas_wb=formulas_wb,
+        config=config,
+        records=records,
+    )
+    lineage, lineage_issues = build_lineage_plan(
+        formulas_wb=formulas_wb,
+        values_wb=values_wb,
+        config=config,
+        records=records,
+    )
+    issues = _configuration_warnings(config) + issues + ratio_issues + lineage_issues
 
     write_generated_sheets(
         wb=formulas_wb,
         config=config,
         records=records,
+        ratio_total_rules=ratio_total_rules,
+        lineage=lineage,
         issues=issues,
     )
     formulas_wb.save(output_path)
@@ -126,9 +122,18 @@ def main() -> None:
         for kpi in config.kpis_by_source[source_name]
         if kpi.aggregation == "ratio" and kpi.ratio_total is not None
     )
-    print("Additive country-group totals: native Excel SUM formulas")
+    inferred_ratio_totals = sum(
+        1 for rule in ratio_total_rules.values() if rule.origin == "inferred"
+    )
+    recursive_ratio_periods = len(lineage.configured_formulas)
+    dependency_count = len(lineage.nodes)
+    print("Value country-group totals: live Excel SUM/AVERAGE formulas")
     print(f"Ratio KPI tables generated: {ratio_count}")
     print(f"Ratio KPIs with configured group-total rules: {configured_ratio_totals}")
+    print(f"Ratio KPIs with inferred simple group-total rules: {inferred_ratio_totals}")
+    print(f"Recursively traced ratio period formulas: {recursive_ratio_periods}")
+    print(f"Automatically discovered dependency KPIs: {dependency_count}")
+    print(f"Live aggregation controls: {config.workbook.aggregation_control_sheet}")
     print(f"Explicitly skipped KPIs: {skip_count}")
 
 
